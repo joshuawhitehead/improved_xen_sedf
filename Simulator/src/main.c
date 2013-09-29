@@ -1,13 +1,3 @@
-/*
- ============================================================================
- Name        : CBS.c
- Author      : 
- Version     :
- Copyright   : Your copyright notice
- Description : Hello World in C, Ansi-style
- ============================================================================
- */
-
 #include <string.h>
 #include <stdlib.h>
 
@@ -54,6 +44,11 @@ int main(void)
 	RegisterVCPU(&queue, &vcpu2, 30, 5);
 
 	StartSimulation(&queue, events, 4);
+
+	for(size_t i = 0; i < queue.servers->length; i++)
+	{
+		destroy_vector(((struct CBS*)vector_get(queue.servers, i))->jobs);
+	}
 
 	destroy_vector(queue.servers);
 

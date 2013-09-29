@@ -34,11 +34,13 @@
 								<option id="gnu.c.compiler.option.warnings.pedantic.1416311302" name="Pedantic (-pedantic)" superClass="gnu.c.compiler.option.warnings.pedantic" value="true" valueType="boolean"/>
 								<option id="gnu.c.compiler.option.misc.other.1794687567" name="Other flags" superClass="gnu.c.compiler.option.misc.other" value="-c -fmessage-length=0 -std=c99 -Wshadow -Wpointer-arith -Wcast-qual -Wstrict-prototypes -Wmissing-prototypes" valueType="string"/>
 								<option id="gnu.c.compiler.option.warnings.toerrors.652926017" name="Warnings as errors (-Werror)" superClass="gnu.c.compiler.option.warnings.toerrors" value="false" valueType="boolean"/>
+								<option id="gnu.c.compiler.option.debugging.other.574340391" name="Other debugging flags" superClass="gnu.c.compiler.option.debugging.other" value="--coverage" valueType="string"/>
 								<inputType id="cdt.managedbuild.tool.gnu.c.compiler.input.1016894553" superClass="cdt.managedbuild.tool.gnu.c.compiler.input"/>
 							</tool>
 							<tool id="cdt.managedbuild.tool.gnu.c.linker.exe.debug.2127896383" name="GCC C Linker" superClass="cdt.managedbuild.tool.gnu.c.linker.exe.debug">
 								<option id="gnu.c.link.option.debugging.prof.192042513" name="Generate prof information (-p)" superClass="gnu.c.link.option.debugging.prof" value="true" valueType="boolean"/>
 								<option id="gnu.c.link.option.debugging.gprof.74242374" name="Generate gprof information (-pg)" superClass="gnu.c.link.option.debugging.gprof" value="true" valueType="boolean"/>
+								<option id="gnu.c.link.option.ldflags.1354423342" name="Linker flags" superClass="gnu.c.link.option.ldflags" value="--coverage" valueType="string"/>
 								<inputType id="cdt.managedbuild.tool.gnu.c.linker.input.1694194767" superClass="cdt.managedbuild.tool.gnu.c.linker.input">
 									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)"/>
 									<additionalInput kind="additionalinput" paths="$(LIBS)"/>
