@@ -31,9 +31,10 @@ void AddJob(struct CBS* server, struct Job* job)
 	}
 }
 
-void DoWork(struct CBS* server)
+bool DoWork(struct CBS* server)
 {
 	ASSERT(server->state != IDLE);
+	bool jobFinished = false;
 
 	server->currentJob.workTime -= 1;
 	server->currentBudget -= 1;
@@ -51,6 +52,8 @@ void DoWork(struct CBS* server)
 
 			printf("[state change] vCPU: %s | to: IDLE\n", server->cpu->name);
 		}
+
+		jobFinished = true;
 	}
 
 	if(server->currentBudget == 0)
@@ -61,6 +64,8 @@ void DoWork(struct CBS* server)
 		server->deadline += server->period;
 		server->currentJob.deadline = server->deadline;
 	}
+
+	return jobFinished;
 }
 
 void AssignJob(struct CBS* server, struct Job* job)

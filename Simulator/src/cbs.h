@@ -25,6 +25,7 @@ struct CBS
 	int deadline;
 	double serverBandwith;
 	vector_p jobs;
+	struct RunData* runTimes;
 };
 
 /**
@@ -38,7 +39,8 @@ void AddJob(struct CBS* server, struct Job* job);
  * Do one piece of work for the currently active job of the CBS
  * May only be called when the CBS is not IDLE
  * @param server
+ * @returns if job has finished
  */
-void DoWork(struct CBS* server);
+bool DoWork(struct CBS* server);
 
 #endif /* CBS_H_ */

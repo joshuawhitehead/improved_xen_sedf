@@ -24,7 +24,7 @@ vector_p subvector(vector_p vec, size_t start, size_t end){
 
 void check_length(vector_p vec){
 	if(vec->length >= vec->capacity){
-		vec->capacity=(size_t)(vec->capacity * EXPAND_RATIO);
+		vec->capacity=((size_t)(vec->capacity * EXPAND_RATIO));
 		vec->data = (void**)realloc((void*)vec->data,
 									vec->capacity*sizeof(void*));
 		vec->sizes = (size_t*)realloc((void*)vec->sizes,
