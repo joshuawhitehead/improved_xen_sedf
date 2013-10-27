@@ -17,21 +17,22 @@ struct CBS* GetServerWithED(struct EDFRunQueue* server)
 	return activeRequest;
 }
 
-bool RegisterVCPU(struct EDFRunQueue* queue, struct vCPU* vcpu, int requestedBudget, int period)
+bool RegisterVCPU(struct EDFRunQueue* queue, struct vCPU* vcpu)
 {
-	if(requestedBudget > queue->availableCapacity)
+	if(vcpu->requestedBudget > queue->availableCapacity)
 		return false;
 
-	printf("[vCPU registered] vCPU: %s | requested budget: %d | period: %d\n", vcpu->name, requestedBudget, period);
+	printf("[vCPU registered] vCPU: %s | requested budget: %d | period: %d\n",
+			vcpu->name, vcpu->requestedBudget, vcpu->period);
 
 	struct CBS client =
 	{
 	.cpu = vcpu,
-	.requestedBudget = requestedBudget,
-	.period = period,
+	.requestedBudget = vcpu->requestedBudget,
+	.period = vcpu->period,
 	.deadline = 0,
-	.currentBudget = requestedBudget,
-	.serverBandwith = requestedBudget / (double)period,
+	.currentBudget = vcpu->requestedBudget,
+	.serverBandwith = vcpu->requestedBudget / (double)vcpu->period,
 	.currentJob.workTime = 0,
 	.state = IDLE,
 	.jobs = create_vector(),

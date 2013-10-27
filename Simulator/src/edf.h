@@ -28,10 +28,8 @@ struct CBS* GetServerWithED(struct EDFRunQueue* server);
  * to serve the vCPU.
  * @param queue
  * @param vcpu
- * @param requestedBudget
- * @param period
  * @return True if successful and false if not.
  */
-bool RegisterVCPU(struct EDFRunQueue* queue, struct vCPU* vcpu, int requestedBudget, int period);
+bool RegisterVCPU(struct EDFRunQueue* queue, struct vCPU* vcpu);
 
 #endif /* EDF_H_ */

@@ -6,12 +6,7 @@
 #include "other.h"
 #include "cbs.h"
 #include "edf.h"
-
-struct SimulationEvent
-{
-	struct vCPU* cpu;
-	struct Job job;
-};
+#include "parser.h"
 
 /**
  * Starts the simulation
@@ -36,23 +31,15 @@ void PrintCharXTimes(char c, int times);
 
 int main(void)
 {
-	struct pCPU pcpu = {100};
-	struct EDFRunQueue queue = {&pcpu, pcpu.capacity, create_vector()};
+	struct ParserResult result = parseFile("input.conf");
+	struct EDFRunQueue queue = {&result.cpu, result.cpu.capacity, create_vector()};
 
-	struct vCPU vcpu1 = {"one"};
-	struct vCPU vcpu2 = {"two"};
-	struct vCPU vcpu3 = {"three"};
+	for(int i = 0; i < result.virtualCpuCount; ++i)
+	{
+		RegisterVCPU(&queue, &result.virtualCpus[i]);
+	}
 
-	struct SimulationEvent events[] = {
-			{&vcpu1, {50, 5}}, {&vcpu2, {10, 5}}, {&vcpu3, {10, 18}},
-			{&vcpu1, {20, 15}}, {&vcpu2, {40, 15}}, {&vcpu3, {10, 30}}
-	};
-
-	RegisterVCPU(&queue, &vcpu1, 5, 15);
-	RegisterVCPU(&queue, &vcpu2, 5, 15);
-	RegisterVCPU(&queue, &vcpu3, 5, 15);
-
-	StartSimulation(&queue, events, 6);
+	StartSimulation(&queue, result.events, result.eventCount);
 	PrintResult(&queue);
 
 	for(size_t i = 0; i < queue.servers->length; i++)
@@ -70,6 +57,7 @@ int main(void)
 		free(server->runTimes);
 	}
 
+	freeResult(&result);
 	destroy_vector(queue.servers);
 
 	return EXIT_SUCCESS;
@@ -84,13 +72,13 @@ void StartSimulation(struct EDFRunQueue* queue, struct SimulationEvent events[],
 
 	while(true)
 	{
-		for(struct SimulationEvent* event = &events[i]; events[i].job.arrivalTime <= currentTime && i < count; i++, event = &events[i])
+		for(struct SimulationEvent* event = &events[i]; i < count && events[i].job.arrivalTime <= currentTime; i++, event = &events[i])
 		{
 			for(size_t j = 0; j < queue->servers->length; j++)
 			{
 				struct CBS* server = vector_get(queue->servers, j);
 
-				if(!strcmp(server->cpu->name, event->cpu->name))
+				if(!strcmp(server->cpu->name, event->vCpuName))
 				{
 					AddJob(server, &(event->job));
 					InsertRunEvent(server, currentTime, NewJob);
@@ -109,8 +97,6 @@ void StartSimulation(struct EDFRunQueue* queue, struct SimulationEvent events[],
 			currentTime = events[i].job.arrivalTime;
 			continue;
 		}
-
-		//printf("[processing] vCPU: %s | remaining work: %d | remaining budget: %d\n", activeServer->cpu->name, activeServer->currentJob.workTime, activeServer->currentBudget);
 
 		if(DoWork(activeServer))
 			InsertRunEvent(activeServer, currentTime, JobEnd);
@@ -160,6 +146,10 @@ void PrintCharXTimes(char c, int times)
 void PrintResult(struct EDFRunQueue* queue)
 {
 	putchar('\n');
+	putchar('\n');
+	puts("legend: idle = _, work = =, job arrival = J, job ends = E");
+	putchar('\n');
+
 	size_t serverCount = queue->servers->length;
 	int maxTime = 0;
 
@@ -170,7 +160,7 @@ void PrintResult(struct EDFRunQueue* queue)
 		struct RunData *tmp;
 		int time = 0;
 
-		puts(server->cpu->name);
+		printf("vCPU: %s\n", server->cpu->name);
 
 		list_for_each(pos, &server->runTimes->list)
 		{

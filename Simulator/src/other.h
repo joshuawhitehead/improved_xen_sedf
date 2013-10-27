@@ -21,11 +21,19 @@ struct EDFJob
 struct vCPU
 {
 	char* name;
+	int requestedBudget;
+	int period;
 };
 
 struct pCPU
 {
 	int capacity;
+};
+
+struct SimulationEvent
+{
+	char* vCpuName;
+	struct Job job;
 };
 
 #endif /* OTHER_H_ */
