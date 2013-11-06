@@ -56,11 +56,20 @@ struct sedf_priv_info {
 };
 
 struct sedf_vcpu_info {
+    
+
     struct vcpu *vcpu;
     struct list_head list;
     struct list_head extralist[2];
  
+ //TODO: Verify and rename CBS variables as needed
+    /* Parameters for CBS */
+    s_time_t cbs_period;
+    s_time_t cbs_max_budget;
+    s_time_t cbs_current_budget;
+    
     /* Parameters for EDF */
+    // TODO: verify if we can refactor period to deadline?
     s_time_t  period;  /* = relative deadline */
     s_time_t  slice;   /* = worst case execution time */
  
@@ -1129,6 +1138,7 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
     }  
     else
     {  
+        //TODO: Remove or avoid this code as needed
         if ( now < inf->deadl_abs )
         {
             /* Short blocking */
@@ -1149,6 +1159,7 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
 
             extraq_check_add_unblocked(d, 1);
         }
+        //END TODO;
     }
 
     if ( PERIOD_BEGIN(inf) > now )
