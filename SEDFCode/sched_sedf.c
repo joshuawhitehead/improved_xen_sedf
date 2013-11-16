@@ -64,13 +64,14 @@ struct sedf_vcpu_info {
     //TODO: Verify and rename CBS variables as needed
     /* Parameters for CBS */
     s_time_t cbs_period;
+    s_time_t cbs_current_deadline;
     s_time_t cbs_max_budget;
     s_time_t cbs_current_budget;
 
     /* Parameters for EDF */
     // TODO: verify if we can refactor period to deadline?
-    s_time_t  period;  /* = relative deadline */
-    s_time_t  slice;   /* = worst case execution time */
+    s_time_t  period;  /* = relative deadline */ // ~= CBS period
+    s_time_t  slice;   /* = worst case execution time */ // ~≃ CBS current budget
 
     /* Advaced Parameters */
 
@@ -85,7 +86,7 @@ struct sedf_vcpu_info {
     short     weight;
     short     extraweight;
     /* Bookkeeping */
-    s_time_t  deadl_abs;
+    s_time_t  deadl_abs; // ~= CBS current deadline
     s_time_t  sched_start_abs;
     s_time_t  cputime;
     /* Times the domain un-/blocked */
@@ -384,6 +385,8 @@ sedf_alloc_domdata(const struct scheduler *ops, struct domain *d)
 
 static int sedf_init_domain(const struct scheduler *ops, struct domain *d)
 {
+	//Todo: verify that realtime schedulability is still fullfiled if the new domain would be inserted
+
     d->sched_priv = sedf_alloc_domdata(ops, d);
     if ( d->sched_priv == NULL )
         return -ENOMEM;
@@ -493,6 +496,7 @@ static void update_queues(
     list_for_each_safe ( cur, tmp, waitq )
     {
         curinf = list_entry(cur, struct sedf_vcpu_info, list);
+        //Todo: call update CBS
         if ( PERIOD_BEGIN(curinf) > now )
             break;
         __del_from_queue(curinf->vcpu);
@@ -503,6 +507,7 @@ static void update_queues(
     list_for_each_safe ( cur, tmp, runq )
     {
         curinf = list_entry(cur,struct sedf_vcpu_info,list);
+        //Todo: call update CBS
 
         if ( unlikely(curinf->slice == 0) )
         {
@@ -510,10 +515,10 @@ static void update_queues(
             __del_from_queue(curinf->vcpu);
 
             /* Move them to their next period */
-            curinf->deadl_abs += curinf->period;
+            curinf->deadl_abs += curinf->period; // Todo: Remove EDF update of deadlines
 
             /* Ensure that the start of the next period is in the future */
-            if ( unlikely(PERIOD_BEGIN(curinf) < now) )
+            if ( unlikely(PERIOD_BEGIN(curinf) < now) ) //Todo: Hopefully we can remove that
                 curinf->deadl_abs +=
                     (DIV_UP(now - PERIOD_BEGIN(curinf),
                             curinf->period)) * curinf->period;
@@ -756,6 +761,26 @@ static void sedf_deinit(const struct scheduler *ops)
         xfree(prv);
 }
 
+/*
+ * s_time_t cbs_period;
+ * s_time_t cbs_current_deadline;
+    s_time_t cbs_max_budget;
+    s_time_t cbs_current_budget;
+ */
+
+static void cbs_update(struct vcpu* vcpu)
+{
+	if(vcpu->cbs_current_budget == 0)
+	{
+		vcpu->cbs_current_budget = vcpu->cbs_max_budget;
+		vcpu->cbs_current_deadline += vcpu->cbs_period;
+	}
+}
+
+static void cbs_do_schedule()
+{
+	//1.
+}
 
 /*
  * Main scheduling function
@@ -770,7 +795,7 @@ static struct task_slice sedf_do_schedule(
     int                   cpu      = smp_processor_id();
     struct list_head     *runq     = RUNQ(cpu);
     struct list_head     *waitq    = WAITQ(cpu);
-    struct sedf_vcpu_info *inf     = EDOM_INFO(current);
+    struct sedf_vcpu_info *inf     = EDOM_INFO(current); // TODO: find the origin of current
     struct list_head      *extraq[] = {
         EXTRAQ(cpu, EXTRA_PEN_Q), EXTRAQ(cpu, EXTRA_UTIL_Q)};
     struct sedf_vcpu_info *runinf, *waitinf;
@@ -1095,6 +1120,14 @@ static inline int should_switch(struct vcpu *cur,
     }
 
     return 1;
+}
+
+static void cbs_wake(struct sedf_vcpu_info* vcpu, s_time_t now)
+{
+	//if(server->currentBudget >= (server->deadline - job->arrivalTime) * server->serverBandwith)
+	if(vcpu->cbs_current_budget >= (vcpu->cbs_current_deadline - now) * (vcpu->cbs_max_budget / vcpu->cbs_period));
+		vcpu->cbs_current_deadline = now + vcpu->cbs_period;
+	//else we can keep the current deadline
 }
 
 static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
