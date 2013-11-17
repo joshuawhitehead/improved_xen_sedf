@@ -63,6 +63,8 @@ struct sedf_vcpu_info {
 //Example command line input: xl sedf vcpu1 --period=10 --budget=3
 
     //TODO: Verify and rename CBS variables as needed
+    //TODO: Combine these variables with the existing SEDF variables
+    //      using well thought-out names
     /* Parameters for CBS */
     s_time_t cbs_period;
     s_time_t cbs_current_deadline;
@@ -71,8 +73,8 @@ struct sedf_vcpu_info {
 
     /* Parameters for EDF */
     // TODO: verify if we can refactor period to deadline?
-    s_time_t  period;  /* = relative deadline */ // ~= CBS period
-    s_time_t  slice;   /* = worst case execution time */ // ~= CBS current budget
+    s_time_t  period;  /* = relative deadline */ // ~= cbs_period
+    s_time_t  slice;   /* = worst case execution time */ // ~= cbs_current_budget
 
     /* Advaced Parameters */
 
@@ -87,7 +89,7 @@ struct sedf_vcpu_info {
     short     weight;
     short     extraweight;
     /* Bookkeeping */
-    s_time_t  deadl_abs; // ~= CBS current deadline
+    s_time_t  deadl_abs; // ~= cbs_current_deadline
     s_time_t  sched_start_abs;
     s_time_t  cputime;
     /* Times the domain un-/blocked */
@@ -277,10 +279,7 @@ static int name##_comp(struct list_head* el1, struct list_head* el2)    \
         return -1;                                                      \
     else                                                                \
         return 1;                                                       \
-}
-
-/*
- * Adds a domain to the queue of processes which wait for the beginning of the
+ /* Adds a domain to the queue of processes which wait for the beginning of the
  * next period; this list is therefore sortet by this time, which is simply
  * absol. deadline - period.
  */
@@ -335,9 +334,20 @@ static void *sedf_alloc_vdata(const struct scheduler *ops, struct vcpu *v, void 
     inf->latency     = 0;
     inf->status      = EXTRA_AWARE | SEDF_ASLEEP;
     inf->extraweight = 1;
+
     /* Upon creation all domain are best-effort */
     inf->period      = WEIGHT_PERIOD;
     inf->slice       = 0;
+
+    //TODO: Add invalid default CBS parameters so user is forced to set parameters
+    /* Default CBS Parameters */
+    inf->cbs_period           = MILLISECS(10);
+    inf->cbs_max_budget       = MILLISECS(10);
+    inf->cbs_current_budget   = 0;
+    inf->cbs_current_deadline = 0;
+        /* Upon creation all domain are best-effort */
+    inf->period      = inf->cbs_period;
+    inf->slice       = inf->cbs_max_budget;
 
     inf->period_orig = inf->period; inf->slice_orig = inf->slice;
     INIT_LIST_HEAD(&(inf->list));
@@ -386,8 +396,6 @@ sedf_alloc_domdata(const struct scheduler *ops, struct domain *d)
 
 static int sedf_init_domain(const struct scheduler *ops, struct domain *d)
 {
-	//Todo: verify that realtime schedulability is still fullfiled if the new domain would be inserted
-
     d->sched_priv = sedf_alloc_domdata(ops, d);
     if ( d->sched_priv == NULL )
         return -ENOMEM;
@@ -407,7 +415,7 @@ static void sedf_destroy_domain(const struct scheduler *ops, struct domain *d)
 
 
 /*
-** CBS: Might use this for multiprocessor support
+** CBS TODO: Might need to use this for multiprocessor support
 */
 static int sedf_pick_cpu(const struct scheduler *ops, struct vcpu *v)
 {
@@ -502,6 +510,7 @@ static void update_queues(
     {
         curinf = list_entry(cur, struct sedf_vcpu_info, list);
         //TODO: call update CBS
+        cbs_update(curinf);
         if ( PERIOD_BEGIN(curinf) > now )
             break;
         __del_from_queue(curinf->vcpu);
@@ -514,7 +523,7 @@ static void update_queues(
         curinf = list_entry(cur,struct sedf_vcpu_info,list);
         
         //TODO: call update CBS
-
+        cbs_update(curinf);
         if ( unlikely(curinf->slice == 0) )
         {
             /* Ignore domains with empty slice */
@@ -522,21 +531,25 @@ static void update_queues(
 
             /* Move them to their next period */
             // TODO: Remove EDF update of deadlines, CBS deadline update takes precedence
-            curinf->deadl_abs += curinf->period;
+                //curinf->deadl_abs += curinf->period;
 
             /* Ensure that the start of the next period is in the future */
-            //TODO: Remove this, it should not happen with CBS (CBS slices are smaller so it's highly unlikely)
-            if ( unlikely(PERIOD_BEGIN(curinf) < now) )
+            //TODO: Remove this, it should not happen with CBS (CBS slices are much smaller so it's highly unlikely)
+            if ( unlikely(PERIOD_BEGIN(curinf) < now) ){
+                BUG_ON(1);
                 curinf->deadl_abs +=
                     (DIV_UP(now - PERIOD_BEGIN(curinf),
                             curinf->period)) * curinf->period;
+            }
 
             /* Put them back into the queue */
             __add_to_waitqueue_sort(curinf->vcpu);
         }
+        //TODO: This also should never happen with CBS working
         else if ( unlikely((curinf->deadl_abs < now) ||
                            (curinf->cputime > curinf->slice)) )
         {
+            BUG_ON(1);
             /*
              * We missed the deadline or the slice was already finished.
              * Might hapen because of dom_adj.
@@ -776,12 +789,17 @@ static void sedf_deinit(const struct scheduler *ops)
     s_time_t cbs_current_budget;
  */
 
-static void cbs_update(struct vcpu* vcpu)
+//TODO: Update function as code is refactored (remove/rename variables)
+static void cbs_update(struct sedf_vcpu_info *inf)
 {
-	if(vcpu->cbs_current_budget == 0)
+
+	if(inf->cbs_current_budget == 0)
 	{
-		vcpu->cbs_current_budget = vcpu->cbs_max_budget;
-		vcpu->cbs_current_deadline += vcpu->cbs_period;
+        //Update CBS parameters
+		inf->cbs_current_budget = inf->cbs_max_budget;
+		inf->cbs_current_deadline += inf->cbs_period;
+        //Update SEDF parameters
+        inf->deadl_abs = inf->cbs_current_deadline; //Will likely be redundant when code is updated
 	}
 }
 
@@ -798,16 +816,19 @@ static struct task_slice sedf_do_schedule(
     int                   cpu      = smp_processor_id();
     struct list_head     *runq     = RUNQ(cpu);
     struct list_head     *waitq    = WAITQ(cpu);
-    struct sedf_vcpu_info *inf     = EDOM_INFO(current); // TODO: find the origin of current
+    struct sedf_vcpu_info *inf     = EDOM_INFO(current); //TODO: find the origin of current
     struct list_head      *extraq[] = {
         EXTRAQ(cpu, EXTRA_PEN_Q), EXTRAQ(cpu, EXTRA_UTIL_Q)};
-    struct sedf_vcpu_info *runinf, *waitinf;
+    struct sedf_vcpu_info *runinf, *waitinf, *budgetinf;
     struct task_slice      ret;
 
     SCHED_STAT_CRANK(schedule);
 
     /*******CBS Related tasks *********
-    *TODO: current_budget -= runinf->cputime (amount of time vcpu has run on the pcpu)
+    *TODO: current_budget -= runinf->cputime (amount of time vcpu has run on the pcpu)*/
+    //Decrement CBS budget based on
+    budgetinf  = list_entry(runq->next,struct sedf_vcpu_info,list);
+    budgetinf->cbs_current_budget -= (now - budgetinf->sched_start_abs);
 
     /* Idle tasks don't need any of the following stuff */
     if ( is_idle_vcpu(current) )
@@ -869,27 +890,29 @@ static struct task_slice sedf_do_schedule(
              * end of slice or the first domain from the waitqueue
              * gets ready.
              */
-            //TODO: runinf->slice = current_budget;
+            //TODO: runinf->slice - runinf->cputime = runinf->cbs_current_budget;
             ret.time = MIN(now + runinf->slice - runinf->cputime,
                            PERIOD_BEGIN(waitinf)) - now;
         }
         //WaitQ is empty
         else
         {
-            //TODO: runinf->slice = current_budget;
+            //TODO: runinf->slice - runinf->cputime = runinf->cbs_current_budget;
             ret.time = runinf->slice - runinf->cputime;
         }
     }
     //RunQ is empty
     else
     {
+        /*TODO: Use BUG_ON or trace to see if do_extra_schedule happens when CBS is implemented,
+        /*      we think that it will not be used */ 
+        BUG_ON(1);
         waitinf  = list_entry(waitq->next,struct sedf_vcpu_info, list);
         /*
          * We could not find any suitable domain
          * => look for domains that are aware of extratime
          */
-        /*TODO: Use BugOn or trace to see if do_extra_schedule happens when CBS is implemented,
-        /*      we think that it will not be used */
+         
         ret = sedf_do_extra_schedule(now, PERIOD_BEGIN(waitinf),
                                      extraq, cpu);
     }
@@ -903,6 +926,7 @@ static struct task_slice sedf_do_schedule(
      */
     if ( ret.time < 0)
     {
+        BUG_ON(1);
         printk("Ouch! We are seriously BEHIND schedule! %"PRIi64"\n",
                ret.time);
         ret.time = EXTRA_QUANTUM;
@@ -1143,11 +1167,14 @@ static inline int should_switch(struct vcpu *cur,
     return 1;
 }
 
-static void cbs_wake(struct sedf_vcpu_info* vcpu, s_time_t now)
+static void cbs_wake(struct sedf_vcpu_info *inf, s_time_t now)
 {
+    //TODO: Throw away extra deadline variable, update as needed
 	//if(server->currentBudget >= (server->deadline - job->arrivalTime) * server->serverBandwith)
-	if(vcpu->cbs_current_budget >= (vcpu->cbs_current_deadline - now) * (vcpu->cbs_max_budget / vcpu->cbs_period)) {
-		vcpu->cbs_current_deadline = now + vcpu->cbs_period;
+	if(inf->cbs_current_budget >= (inf->cbs_current_deadline - now) *
+                                         (inf->cbs_max_budget / inf->cbs_period)) {
+		inf->cbs_current_deadline = now + inf->cbs_period;
+        inf->deadl_abs = inf->cbs_current_deadline;
     }
 	//else we can keep the current deadline
 }
@@ -1168,18 +1195,24 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
     ASSERT(!extraq_on(d, EXTRA_UTIL_Q));
     ASSERT(!extraq_on(d, EXTRA_PEN_Q));
 
-    if ( unlikely(inf->deadl_abs == 0) )
+    cbs_wake(inf, now);
+
+//TODO: Not needed as deadline as just been updated to non-zero value
+  /*  if ( unlikely(inf->deadl_abs == 0) )
     {
-        /* Initial setup of the deadline */
+        /* Initial setup of the deadline *//*
         inf->deadl_abs = now + inf->slice;
-    }
+    }*/
 
 #ifdef SEDF_STATS
     inf->block_tot++;
 #endif
 
+    //TODO: This part should not be called with CBS running, use bugon to track
+    //TODO: Remove or avoid this code as needed, use cbs_wake() instead
     if ( unlikely(now < PERIOD_BEGIN(inf)) )
     {
+        BUG_ON(1);
         /* Unblocking in extra-time! */
         if ( inf->status & EXTRA_WANT_PEN_Q )
         {
@@ -1195,14 +1228,7 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
     }
     else
     {
-        //TODO: Remove or avoid this code as needed, use cbs_wake instead:
-        /*  //if(server->currentBudget >= (server->deadline - job->arrivalTime) * server->serverBandwith)
-            if(vcpu->cbs_current_budget >= (vcpu->cbs_current_deadline - now) * 
-                (vcpu->cbs_max_budget / vcpu->cbs_period)){
-                vcpu->cbs_current_deadline = now + vcpu->cbs_period;
-            }
-            //else we can keep the current deadline
-        */
+        BUG_ON(1);
         if ( now < inf->deadl_abs )
         {
             /* Short blocking */
@@ -1223,8 +1249,9 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
 
             extraq_check_add_unblocked(d, 1);
         }
-        //END TODO;
+        
     }
+    //END TODO;
 
     if ( PERIOD_BEGIN(inf) > now )
         __add_to_waitqueue_sort(d);
@@ -1476,6 +1503,7 @@ static int sedf_adjust(const struct scheduler *ops, struct domain *p, struct xen
             goto out;
         }
 
+//TODO: verify that realtime schedulability is still fullfilled if the new domain would be inserted
         /* Check for sane parameters */
         if ( !op->u.sedf.period && !op->u.sedf.weight )
         {
