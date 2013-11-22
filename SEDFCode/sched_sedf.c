@@ -58,7 +58,7 @@ struct sedf_vcpu_info {
     s_time_t  sched_start_abs;
     s_time_t  cputime;   /* ~= cbs_current_budget (inveted, i.e. accumulated time vs. consumed time */
     s_time_t  block_abs;
-    
+
     /* Statistics */
 #ifdef SEDF_STATS
     s_time_t  block_time_tot;
@@ -74,10 +74,10 @@ struct sedf_cpu_info {
 
 #define SEDF_PRIV(_ops) \
     ((struct sedf_priv_info *)((_ops)->sched_data))
-#define EDOM_INFO(d)   ((struct sedf_vcpu_info *)((d)->sched_priv))
+#define VCPU_INFO(v)   ((struct sedf_vcpu_info *)((v)->sched_priv))
 #define CPU_INFO(cpu)  \
     ((struct sedf_cpu_info *)per_cpu(schedule_data, cpu).sched_priv)
-#define LIST(d)        (&EDOM_INFO(d)->list)
+#define LIST(v)        (&VCPU_INFO(v)->list)
 #define RUNQ(cpu)      (&CPU_INFO(cpu)->runnableq)
 #define WAITQ(cpu)     (&CPU_INFO(cpu)->waitq)
 #define IDLETASK(cpu)  (idle_vcpu[cpu])
@@ -86,7 +86,7 @@ struct sedf_cpu_info {
 
 #define DIV_UP(x,y) (((x) + (y) - 1) / y)
 
-#define sedf_runnable(edom)  (!(EDOM_INFO(edom)->status & SEDF_ASLEEP))
+#define sedf_runnable(edom)  (!(VCPU_INFO(edom)->status & SEDF_ASLEEP))
 
 
 static void sedf_dump_cpu_state(const struct scheduler *ops, int i);
@@ -105,13 +105,13 @@ static int name##_comp(struct list_head* el1, struct list_head* el2)    \
         return 1;                                                       \
 }
 
-static inline void __del_from_queue(struct vcpu *d)
+static inline void __del_from_queue(struct vcpu *v)
 {
-    struct list_head *list = LIST(d);
-    ASSERT(__task_on_queue(d));
+    struct list_head *list = LIST(v);
+    ASSERT(__vcpu_on_queue(v));
     list_del(list);
     list->next = NULL;
-    ASSERT(!__task_on_queue(d));
+    ASSERT(!__vcpu_on_queue(v));
 }
 
 typedef int(*list_comparer)(struct list_head* el1, struct list_head* el2);
@@ -139,9 +139,9 @@ DOMAIN_COMPARER(waitq, list, PERIOD_BEGIN(d1), PERIOD_BEGIN(d2));
 
 static inline void __add_to_waitqueue_sort(struct vcpu *v)
 {
-    ASSERT(!__task_on_queue(v));
+    ASSERT(!__vcpu_on_queue(v));
     list_insert_sort(WAITQ(v->processor), LIST(v), waitq_comp);
-    ASSERT(__task_on_queue(v));
+    ASSERT(__vcpu_on_queue(v));
 }
 
 /********** Add to RunQ *************
@@ -157,8 +157,9 @@ static inline void __add_to_runqueue_sort(struct vcpu *v)
     list_insert_sort(RUNQ(v->processor), LIST(v), runq_comp);
 }
 
-static inline int __task_on_queue(struct domain *d) {
-	return (((LIST(d))->next != NULL) && (LIST(d)->next != LIST(d)));
+static inline int __vcpu_on_queue(struct vcpu *v)
+{
+    return (((LIST(v))->next != NULL) && (LIST(v)->next != LIST(v)));
 }
 
 /* Required function to satisfy scheduler interface */
@@ -166,8 +167,8 @@ static void sedf_insert_vcpu(const struct scheduler *ops, struct vcpu *v)
 {
     if (is_idle_vcpu(v))
     {
-        EDOM_INFO(v)->deadl_abs = 0;
-        EDOM_INFO(v)->status &= ~SEDF_ASLEEP;
+        VCPU_INFO(v)->deadl_abs = 0;
+        VCPU_INFO(v)->status &= ~SEDF_ASLEEP;
     }
 }
 
@@ -191,12 +192,11 @@ static void *sedf_alloc_vdata(const struct scheduler *ops, struct vcpu *v, void 
     inf->cbs_max_budget       = MILLISECS(10);
     inf->cbs_current_budget   = 0;
     inf->cbs_current_deadline = 0;
-    
+
     /* TODO: Remove these variables as soon as safely possible */
     inf->period      = inf->cbs_period;
     inf->slice       = inf->cbs_max_budget;
 
-    inf->period_orig = inf->period; inf->slice_orig = inf->slice;
     INIT_LIST_HEAD(&(inf->list));
 
     SCHED_STAT_CRANK(vcpu_init);
@@ -271,16 +271,34 @@ static int sedf_pick_cpu(const struct scheduler *ops, struct vcpu *v)
                          &online_affinity);
 }
 
+/* TODO: Update function as code is refactored (remove/rename variables) */
+static void cbs_update(struct sedf_vcpu_info *inf, s_time_t now)
+{
+    if(inf->cbs_current_budget <= 0)
+    {
+        if(inf->cbs_current_budget < 0){
+            printk("CBS: Budget was exceeded by %"PRIu64" ns \n",
+                    inf->cbs_current_budget * -1);
+        }
+        /* Update CBS parameters */
+        inf->cbs_current_budget = inf->cbs_max_budget;
+        //inf->cbs_current_deadline += inf->cbs_period;
+        inf->cbs_current_deadline = now + inf->cbs_period;
+        /* Update SEDF parameters */
+        inf->deadl_abs = inf->cbs_current_deadline; /* Will likely be redundant when code is refactored  */
+	}
+}
+
 /*
  * Handles the rescheduling & bookkeeping of domains running in their
  * guaranteed timeslice.
  */
 static void desched_edf_dom(s_time_t now, struct vcpu* v)
 {
-    struct sedf_vcpu_info* inf = EDOM_INFO(v);
+    struct sedf_vcpu_info* inf = VCPU_INFO(v);
 
     /* Current domain is running in real time mode */
-    ASSERT(__task_on_queue(v));
+    ASSERT(__vcpu_on_queue(v));
 
     /* Update the vcpu's cputime */
     /* TODO: Update cbs_current_budget here instead */
@@ -317,26 +335,8 @@ static void desched_edf_dom(s_time_t now, struct vcpu* v)
     /*TODO: Move cbs_update functionality to this function? */
     cbs_update(v, now);
 
-    ASSERT(EQ(sedf_runnable(v), __task_on_queue(v)));
+    ASSERT(EQ(sedf_runnable(v), __vcpu_on_queue(v)));
     ASSERT(sedf_runnable(v));
-}
-
-/* TODO: Update function as code is refactored (remove/rename variables) */
-static void cbs_update(struct sedf_vcpu_info *inf, s_time_t now)
-{
-    if(inf->cbs_current_budget <= 0)
-    {
-        if(inf->cbs_current_budget < 0){
-            printk("CBS: Budget was exceeded by %"PRIu64" ns \n",
-                    inf->cbs_current_budget * -1);
-        }
-        /* Update CBS parameters */
-        inf->cbs_current_budget = inf->cbs_max_budget;
-        //inf->cbs_current_deadline += inf->cbs_period;
-        inf->cbs_current_deadline = now + inf->cbs_period;
-        /* Update SEDF parameters */
-        inf->deadl_abs = inf->cbs_current_deadline; /* Will likely be redundant when code is refactored  */
-	}
 }
 
 /* Update all elements on the queues */
@@ -363,7 +363,7 @@ static void update_queues(
     list_for_each_safe ( cur, tmp, runq )
     {
         curinf = list_entry(cur,struct sedf_vcpu_info,list);
-        
+
         /* TODO: Update to CBS variables */
         if ( unlikely(curinf->slice == 0) )
         {
@@ -389,7 +389,7 @@ static void update_queues(
         }
         /* TODO: This also should never happen with CBS working,
          * except in the case of a parameter change (sedf_adjust)
-         * 1) Decide how problem should be handled 
+         * 1) Decide how problem should be handled
          * 2) update variables to CBS variables */
         else if ( unlikely((curinf->deadl_abs < now) ||
                            (curinf->cputime > curinf->slice)) )
@@ -455,12 +455,11 @@ static void sedf_deinit(const struct scheduler *ops)
         xfree(prv);
 }
 
-#define MIN(x,y) (((x)<(y))?(x):(y))
 /*
  * Main scheduling function
  * Reasons for calling this function are:
  * -timeslice for the current period used up
- * -domain on waitqueue has started it's period 
+ * -domain on waitqueue has started it's period
 */
 static struct task_slice sedf_do_schedule(
     const struct scheduler *ops, s_time_t now, bool_t tasklet_work_scheduled)
@@ -468,9 +467,7 @@ static struct task_slice sedf_do_schedule(
     int                   cpu      = smp_processor_id();
     struct list_head     *runq     = RUNQ(cpu);
     struct list_head     *waitq    = WAITQ(cpu);
-    struct sedf_vcpu_info *inf     = EDOM_INFO(current); /* TODO: find the origin of current */
-    struct list_head      *extraq[] = {
-        EXTRAQ(cpu, EXTRA_PEN_Q), EXTRAQ(cpu, EXTRA_UTIL_Q)};
+    struct sedf_vcpu_info *inf     = VCPU_INFO(current); /* TODO: find the origin of current */
     struct sedf_vcpu_info *runinf, *waitinf, *budgetinf;
     struct task_slice      ret;
 
@@ -499,9 +496,10 @@ static struct task_slice sedf_do_schedule(
     if ( inf->status & SEDF_ASLEEP )
         inf->block_abs = now;
 
-    /* Remove 
+    /* Update CBS parameters and remove vcpus from queue that are blocking
+     * or have consumed their server budget for this period */
     desched_edf_dom(now, current);
-    
+
  check_waitq:
     update_queues(now, runq, waitq);
 
@@ -553,7 +551,7 @@ static struct task_slice sedf_do_schedule(
     else
     {
         /*TODO: Use BUG_ON or trace to see if do_extra_schedule happens when CBS is implemented,
-         *      we think that it will not be used */ 
+         *      we think that it will not be used */
         //BUG_ON(1);
         waitinf  = list_entry(waitq->next,struct sedf_vcpu_info, list);
         /*
@@ -579,64 +577,64 @@ static struct task_slice sedf_do_schedule(
 
     ret.migrated = 0;
 
-    EDOM_INFO(ret.task)->sched_start_abs = now;
+    VCPU_INFO(ret.task)->sched_start_abs = now;
     CHECK(ret.time > 0);
     ASSERT(sedf_runnable(ret.task));
     CPU_INFO(cpu)->current_slice_expires = now + ret.time;
     return ret;
 }
 
-static void sedf_sleep(const struct scheduler *ops, struct vcpu *d)
+static void sedf_sleep(const struct scheduler *ops, struct vcpu *v)
 {
-    if ( is_idle_vcpu(d) )
+    if ( is_idle_vcpu(v) )
         return;
 
-    EDOM_INFO(d)->status |= SEDF_ASLEEP;
+    VCPU_INFO(v)->status |= SEDF_ASLEEP;
 
     if ( per_cpu(schedule_data, d->processor).curr == d )
     {
         cpu_raise_softirq(d->processor, SCHEDULE_SOFTIRQ);
     }
-    else if ( __task_on_queue(d) )
-            __del_from_queue(d);
+    else if ( __vcpu_on_queue(v) )
+            __del_from_queue(v);
     }
 }
 
 #define DOMAIN_EDF   1
 #define DOMAIN_IDLE   4
-static inline int get_run_type(struct vcpu* d)
+static inline int get_run_type(struct vcpu *v)
 {
-    struct sedf_vcpu_info* inf = EDOM_INFO(d);
-    if (is_idle_vcpu(d))
+    struct sedf_vcpu_info* inf = VCPU_INFO(v);
+    if (is_idle_vcpu(v))
         return DOMAIN_IDLE;
 
     return DOMAIN_EDF;
 }
 
 /* Print a lot of useful information about a domains in the system */
-static void sedf_dump_domain(struct vcpu *d)
+static void sedf_dump_domain(struct vcpu *v)
 {
     printk("%i.%i has=%c ", d->domain->domain_id, d->vcpu_id,
            d->is_running ? 'T':'F');
     printk("p=%"PRIu64" sl=%"PRIu64" ddl=%"PRIu64" w=%hu"
            " sc=%i xtr(%s)=%"PRIu64" ew=%hu",
-           EDOM_INFO(d)->period, EDOM_INFO(d)->slice, EDOM_INFO(d)->deadl_abs,
-           
+           VCPU_INFO(v)->period, VCPU_INFO(v)->slice, VCPU_INFO(v)->deadl_abs,
+
 #ifdef SEDF_STATS
-    if ( EDOM_INFO(d)->block_time_tot != 0 )
-        printk(" pen=%"PRIu64"%%", (EDOM_INFO(d)->penalty_time_tot * 100) /
-               EDOM_INFO(d)->block_time_tot);
-    if ( EDOM_INFO(d)->block_tot != 0 )
+    if ( VCPU_INFO(v)->block_time_tot != 0 )
+        printk(" pen=%"PRIu64"%%", (VCPU_INFO(v)->penalty_time_tot * 100) /
+               VCPU_INFO(v)->block_time_tot);
+    if ( VCPU_INFO(v)->block_tot != 0 )
         printk("\n   blks=%u sh=%u (%u%%) (shex=%i "\
                "shexsl=%i) l=%u (%u%%) avg: b=%"PRIu64" p=%"PRIu64"",
-               EDOM_INFO(d)->block_tot, EDOM_INFO(d)->short_block_tot,
-               (EDOM_INFO(d)->short_block_tot * 100) / EDOM_INFO(d)->block_tot,
-               EDOM_INFO(d)->pen_extra_blocks,
-               EDOM_INFO(d)->pen_extra_slices,
-               EDOM_INFO(d)->long_block_tot,
-               (EDOM_INFO(d)->long_block_tot * 100) / EDOM_INFO(d)->block_tot,
-               (EDOM_INFO(d)->block_time_tot) / EDOM_INFO(d)->block_tot,
-               (EDOM_INFO(d)->penalty_time_tot) / EDOM_INFO(d)->block_tot);
+               VCPU_INFO(v)->block_tot, VCPU_INFO(v)->short_block_tot,
+               (VCPU_INFO(v)->short_block_tot * 100) / VCPU_INFO(v)->block_tot,
+               VCPU_INFO(v)->pen_extra_blocks,
+               VCPU_INFO(v)->pen_extra_slices,
+               VCPU_INFO(v)->long_block_tot,
+               (VCPU_INFO(v)->long_block_tot * 100) / VCPU_INFO(v)->block_tot,
+               (VCPU_INFO(v)->block_time_tot) / VCPU_INFO(v)->block_tot,
+               (VCPU_INFO(v)->penalty_time_tot) / VCPU_INFO(v)->block_tot);
 #endif
     printk("\n");
 }
@@ -653,8 +651,8 @@ static inline int should_switch(struct vcpu *cur,
                                 s_time_t now)
 {
     struct sedf_vcpu_info *cur_inf, *other_inf;
-    cur_inf   = EDOM_INFO(cur);
-    other_inf = EDOM_INFO(other);
+    cur_inf   = VCPU_INFO(cur);
+    other_inf = VCPU_INFO(other);
 
     /* Check whether we need to make an earlier scheduling decision */
     if ( PERIOD_BEGIN(other_inf) <
@@ -688,7 +686,7 @@ static inline int should_switch(struct vcpu *cur,
  *      the beginning of the next complete period
  *      (D..deadline, R..running, B..blocking/sleeping, U..unblocking/waking up
  *
- *      DRRB_____D__U_____DRRRRR___D________ ... 
+ *      DRRB_____D__U_____DRRRRR___D________ ...
  *
  *     -this causes the domain to miss a period (and a deadlline)
  *     -doesn't disturb the schedule at all
@@ -724,7 +722,7 @@ static inline int should_switch(struct vcpu *cur,
  *      DRB______D___URRRR___D...<prev [Thread] next>
  *                       (D) <- old deadline was here
  *     -problem: deadlines don't occur isochronous anymore
- *    
+ *
  *     Part 2c (Improved Atropos design)
  *     -when a domain unblocks it is given a very short period (=latency hint)
  *      and slice length scaled accordingly
@@ -738,22 +736,22 @@ static inline int should_switch(struct vcpu *cur,
  *     -either behaviour can lead to missed deadlines in other domains as
  *      opposed to approaches 1,2a,2b
  */
-static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
+static void sedf_wake(const struct scheduler *ops, struct vcpu *v)
 {
     s_time_t               now = NOW();
-    struct sedf_vcpu_info* inf = EDOM_INFO(d);
+    struct sedf_vcpu_info* inf = VCPU_INFO(v);
 
-    if ( unlikely(is_idle_vcpu(d)) )
+    if ( unlikely(is_idle_vcpu(v)) )
         return;
 
-    if ( unlikely(__task_on_queue(d)) )
+    if ( unlikely(__vcpu_on_queue(v)) )
         return;
 
-    ASSERT(!sedf_runnable(d));
+    ASSERT(!sedf_runnable(v));
     inf->status &= ~SEDF_ASLEEP;
 
     /* TODO: Throw away extra deadline variable, update as needed */
-    /* Moved from cbs_wake();	
+    /* Moved from cbs_wake();
     /* If current deadline cannot be used recalculate it */
 	if(inf->cbs_current_budget >= (inf->cbs_current_deadline - now) *
                                       (inf->cbs_max_budget / inf->cbs_period)) {
@@ -769,9 +767,9 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
     /* TODO: Update to use CBS variables instead.
      * Circumstance should be unlikely, report if it occurs */
     if ( PERIOD_BEGIN(inf) > now )
-        __add_to_waitqueue_sort(d);
+        __add_to_waitqueue_sort(v);
     else
-        __add_to_runqueue_sort(d);
+        __add_to_runqueue_sort(v);
 
 #ifdef SEDF_STATS
     /* Do some statistics here... */
@@ -791,7 +789,7 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *d)
     ASSERT(d->processor >= 0);
     ASSERT(d->processor < nr_cpu_ids);
     ASSERT(per_cpu(schedule_data, d->processor).curr);
-    
+
     if ( should_switch(per_cpu(schedule_data, d->processor).curr, d, now) )
         cpu_raise_softirq(d->processor, SCHEDULE_SOFTIRQ);
 }
@@ -837,7 +835,7 @@ static void sedf_dump_cpu_state(const struct scheduler *ops, int i)
             continue;
         for_each_vcpu(d, ed)
         {
-            if ( !__task_on_queue(ed) && (ed->processor == i) )
+            if ( !__vcpu_on_queue(ed) && (ed->processor == i) )
             {
                 printk("%3d: ",loop++);
                 sedf_dump_domain(ed);
@@ -879,6 +877,7 @@ static int sedf_adjust(const struct scheduler *ops, struct domain *p, struct xen
         /*
          * Sanity checking parameters
          */
+        /* TODO: Add CBS parameters */
         if ( (op->u.sedf.period > PERIOD_MAX) ||
              (op->u.sedf.period < PERIOD_MIN) ||
              (op->u.sedf.slice  > op->u.sedf.period) ||
@@ -892,11 +891,10 @@ static int sedf_adjust(const struct scheduler *ops, struct domain *p, struct xen
         for_each_vcpu ( p, v )
         {
             spinlock_t *lock = vcpu_schedule_lock(v);
+            /* TODO: Add CBS parameters */
+            VCPU_INFO(v)->period  = op->u.sedf.period;
+            VCPU_INFO(v)->slice   = op->u.sedf.slice;
 
-            EDOM_INFO(v)->period_orig =
-                EDOM_INFO(v)->period  = op->u.sedf.period;
-            EDOM_INFO(v)->slice_orig  =
-                EDOM_INFO(v)->slice   = op->u.sedf.slice;
             vcpu_schedule_unlock(lock, v);
         }
     }
@@ -908,8 +906,8 @@ static int sedf_adjust(const struct scheduler *ops, struct domain *p, struct xen
             goto out;
         }
 
-        op->u.sedf.period    = EDOM_INFO(p->vcpu[0])->period;
-        op->u.sedf.slice     = EDOM_INFO(p->vcpu[0])->slice;
+        op->u.sedf.period    = VCPU_INFO(p->vcpu[0])->period;
+        op->u.sedf.slice     = VCPU_INFO(p->vcpu[0])->slice;
         /* TODO: Add CBS parameters */
     }
 
