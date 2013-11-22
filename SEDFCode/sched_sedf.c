@@ -13,6 +13,18 @@
 #include <xen/time.h>
 #include <xen/errno.h>
 
+#ifndef NDEBUG
+#define SEDF_STATS
+#define CHECK(_p)                                           \
+    do {                                                    \
+        if ( !(_p) )                                        \
+            printk("Check '%s' failed, line %d, file %s\n", \
+                   #_p , __LINE__, __FILE__);               \
+    } while ( 0 )
+#else
+#define CHECK(_p) ((void)0)
+#endif
+
 #define SEDF_ASLEEP (16)
 
 #define PERIOD_MAX MILLISECS(10000) /* 10s  */
@@ -63,6 +75,7 @@ struct sedf_vcpu_info {
 #ifdef SEDF_STATS
     s_time_t  block_time_tot;
     s_time_t  penalty_time_tot;
+    int       block_tot;
 #endif
 };
 
@@ -103,6 +116,11 @@ static int name##_comp(struct list_head* el1, struct list_head* el2)    \
         return -1;                                                      \
     else                                                                \
         return 1;                                                       \
+}
+
+static inline int __vcpu_on_queue(struct vcpu *v)
+{
+    return (((LIST(v))->next != NULL) && (LIST(v)->next != LIST(v)));
 }
 
 static inline void __del_from_queue(struct vcpu *v)
@@ -155,11 +173,6 @@ DOMAIN_COMPARER(runq, list, d1->deadl_abs, d2->deadl_abs);
 static inline void __add_to_runqueue_sort(struct vcpu *v)
 {
     list_insert_sort(RUNQ(v->processor), LIST(v), runq_comp);
-}
-
-static inline int __vcpu_on_queue(struct vcpu *v)
-{
-    return (((LIST(v))->next != NULL) && (LIST(v)->next != LIST(v)));
 }
 
 /* Required function to satisfy scheduler interface */
@@ -333,7 +346,7 @@ static void desched_edf_dom(s_time_t now, struct vcpu* v)
     }
 
     /*TODO: Move cbs_update functionality to this function? */
-    cbs_update(v, now);
+    cbs_update(inf, now);
 
     ASSERT(EQ(sedf_runnable(v), __vcpu_on_queue(v)));
     ASSERT(sedf_runnable(v));
@@ -572,7 +585,7 @@ static struct task_slice sedf_do_schedule(
         BUG_ON(1);
         printk("Ouch! We are seriously BEHIND schedule! %"PRIi64"\n",
                ret.time);
-        ret.time = EXTRA_QUANTUM;
+        ret.time = MICROSECS(500);
     }
 
     ret.migrated = 0;
@@ -591,20 +604,18 @@ static void sedf_sleep(const struct scheduler *ops, struct vcpu *v)
 
     VCPU_INFO(v)->status |= SEDF_ASLEEP;
 
-    if ( per_cpu(schedule_data, d->processor).curr == d )
+    if ( per_cpu(schedule_data, v->processor).curr == v )
     {
-        cpu_raise_softirq(d->processor, SCHEDULE_SOFTIRQ);
+        cpu_raise_softirq(v->processor, SCHEDULE_SOFTIRQ);
     }
     else if ( __vcpu_on_queue(v) )
             __del_from_queue(v);
-    }
 }
 
 #define DOMAIN_EDF   1
 #define DOMAIN_IDLE   4
 static inline int get_run_type(struct vcpu *v)
-{
-    struct sedf_vcpu_info* inf = VCPU_INFO(v);
+{ 
     if (is_idle_vcpu(v))
         return DOMAIN_IDLE;
 
@@ -614,27 +625,15 @@ static inline int get_run_type(struct vcpu *v)
 /* Print a lot of useful information about a domains in the system */
 static void sedf_dump_domain(struct vcpu *v)
 {
-    printk("%i.%i has=%c ", d->domain->domain_id, d->vcpu_id,
-           d->is_running ? 'T':'F');
-    printk("p=%"PRIu64" sl=%"PRIu64" ddl=%"PRIu64" w=%hu"
-           " sc=%i xtr(%s)=%"PRIu64" ew=%hu",
-           VCPU_INFO(v)->period, VCPU_INFO(v)->slice, VCPU_INFO(v)->deadl_abs,
+    printk("%i.%i has=%c ", v->domain->domain_id, v->vcpu_id,
+           v->is_running ? 'T':'F');
+    printk("p=%"PRIu64" sl=%"PRIu64" ddl=%"PRIu64"",
+           VCPU_INFO(v)->period, VCPU_INFO(v)->slice, VCPU_INFO(v)->deadl_abs);
 
 #ifdef SEDF_STATS
     if ( VCPU_INFO(v)->block_time_tot != 0 )
         printk(" pen=%"PRIu64"%%", (VCPU_INFO(v)->penalty_time_tot * 100) /
                VCPU_INFO(v)->block_time_tot);
-    if ( VCPU_INFO(v)->block_tot != 0 )
-        printk("\n   blks=%u sh=%u (%u%%) (shex=%i "\
-               "shexsl=%i) l=%u (%u%%) avg: b=%"PRIu64" p=%"PRIu64"",
-               VCPU_INFO(v)->block_tot, VCPU_INFO(v)->short_block_tot,
-               (VCPU_INFO(v)->short_block_tot * 100) / VCPU_INFO(v)->block_tot,
-               VCPU_INFO(v)->pen_extra_blocks,
-               VCPU_INFO(v)->pen_extra_slices,
-               VCPU_INFO(v)->long_block_tot,
-               (VCPU_INFO(v)->long_block_tot * 100) / VCPU_INFO(v)->block_tot,
-               (VCPU_INFO(v)->block_time_tot) / VCPU_INFO(v)->block_tot,
-               (VCPU_INFO(v)->penalty_time_tot) / VCPU_INFO(v)->block_tot);
 #endif
     printk("\n");
 }
@@ -750,9 +749,9 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *v)
     ASSERT(!sedf_runnable(v));
     inf->status &= ~SEDF_ASLEEP;
 
-    /* TODO: Throw away extra deadline variable, update as needed */
-    /* Moved from cbs_wake();
-    /* If current deadline cannot be used recalculate it */
+    /* TODO: Throw away extra deadline variable, update as needed
+     * Moved from cbs_wake();
+     * If current deadline cannot be used recalculate it */
 	if(inf->cbs_current_budget >= (inf->cbs_current_deadline - now) *
                                       (inf->cbs_max_budget / inf->cbs_period)) {
 		inf->cbs_current_deadline = now + inf->cbs_period;
@@ -786,24 +785,23 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *v)
      * routine. Try to avoid unnecessary runs but:
      * Save approximation: Always switch to scheduler!
      */
-    ASSERT(d->processor >= 0);
-    ASSERT(d->processor < nr_cpu_ids);
-    ASSERT(per_cpu(schedule_data, d->processor).curr);
+    ASSERT(v->processor >= 0);
+    ASSERT(v->processor < nr_cpu_ids);
+    ASSERT(per_cpu(schedule_data, v->processor).curr);
 
-    if ( should_switch(per_cpu(schedule_data, d->processor).curr, d, now) )
-        cpu_raise_softirq(d->processor, SCHEDULE_SOFTIRQ);
+    if ( should_switch(per_cpu(schedule_data, v->processor).curr, v, now) )
+        cpu_raise_softirq(v->processor, SCHEDULE_SOFTIRQ);
 }
 
 /* Dumps all domains on the specified cpu */
 static void sedf_dump_cpu_state(const struct scheduler *ops, int i)
 {
     struct list_head      *list, *queue, *tmp;
-    struct sedf_vcpu_info *d_inf;
+    struct sedf_vcpu_info *v_inf;
     struct domain         *d;
-    struct vcpu    *ed;
+    struct vcpu    *v;
     int loop = 0;
-    struct sedf_dom_info *d_inf;
-
+ 
     printk("now=%"PRIu64"\n",NOW());
     queue = RUNQ(i);
     printk("RUNQ rq %lx   n: %lx, p: %lx\n",  (unsigned long)queue,
@@ -811,18 +809,18 @@ static void sedf_dump_cpu_state(const struct scheduler *ops, int i)
     list_for_each_safe ( list, tmp, queue )
     {
         printk("%3d: ",loop++);
-        d_inf = list_entry(list, struct sedf_vcpu_info, list);
-        sedf_dump_domain(d_inf->vcpu);
+        v_inf = list_entry(list, struct sedf_vcpu_info, list);
+        sedf_dump_domain(v_inf->vcpu);
     }
-
+ 
     queue = WAITQ(i); loop = 0;
     printk("\nWAITQ rq %lx   n: %lx, p: %lx\n",  (unsigned long)queue,
            (unsigned long) queue->next, (unsigned long) queue->prev);
     list_for_each_safe ( list, tmp, queue )
     {
         printk("%3d: ",loop++);
-        d_inf = list_entry(list, struct sedf_vcpu_info, list);
-        sedf_dump_domain(d_inf->vcpu);
+        v_inf = list_entry(list, struct sedf_vcpu_info, list);
+        sedf_dump_domain(v_inf->vcpu);
     }
 
     loop = 0;
@@ -833,12 +831,12 @@ static void sedf_dump_cpu_state(const struct scheduler *ops, int i)
     {
         if ( (d->cpupool ? d->cpupool->sched : &sched_sedf_def) != ops )
             continue;
-        for_each_vcpu(d, ed)
+        for_each_vcpu(d, v)
         {
-            if ( !__vcpu_on_queue(ed) && (ed->processor == i) )
+            if ( !__vcpu_on_queue(v) && (v->processor == i) )
             {
                 printk("%3d: ",loop++);
-                sedf_dump_domain(ed);
+                sedf_dump_domain(v);
             }
         }
     }
@@ -850,7 +848,10 @@ static int sedf_adjust(const struct scheduler *ops, struct domain *p, struct xen
 {
     struct sedf_priv_info *prv = SEDF_PRIV(ops);
     unsigned long flags;
-    unsigned int nr_cpus = cpumask_last(&cpu_online_map) + 1;
+    /* TODO: Variable  containing number of CPU's, was used for weight version
+     * of the SEDF scheduler, not used at this point, but may want it at a
+     * later date for other CBS purposes 
+    unsigned int nr_cpus = cpumask_last(&cpu_online_map) + 1; */
     struct vcpu *v;
     int rc = 0;
 
