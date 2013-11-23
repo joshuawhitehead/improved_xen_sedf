@@ -287,19 +287,18 @@ static int sedf_pick_cpu(const struct scheduler *ops, struct vcpu *v)
 /* TODO: Update function as code is refactored (remove/rename variables) */
 static void cbs_update(struct sedf_vcpu_info *inf, s_time_t now)
 {
-    if(inf->cbs_current_budget <= 0)
-    {
-        if(inf->cbs_current_budget < 0){
-            printk("CBS: Budget was exceeded by %"PRIu64" ns \n",
-                    inf->cbs_current_budget * -1);
-        }
-        /* Update CBS parameters */
-        inf->cbs_current_budget = inf->cbs_max_budget;
-        //inf->cbs_current_deadline += inf->cbs_period;
-        inf->cbs_current_deadline = now + inf->cbs_period;
-        /* Update SEDF parameters */
-        inf->deadl_abs = inf->cbs_current_deadline; /* Will likely be redundant when code is refactored  */
-	}
+    if(inf->cbs_current_budget < -(MICROSECS(5))){
+        printk("CBS: Budget was exceeded by %"PRIu64" ns \n",
+                inf->cbs_current_budget * -1);
+    }
+    /* Update CBS parameters */
+    /* Replensish budget */
+    inf->cbs_current_budget += inf->cbs_max_budget; //Changed to += instead of =
+    /* Update server deadline */
+    inf->cbs_current_deadline += inf->cbs_period;
+    /* Update SEDF parameters */
+    /* Will likely be redundant when code is refactored  */
+    inf->deadl_abs = inf->cbs_current_deadline;
 }
 
 /*
@@ -313,16 +312,26 @@ static void desched_edf_dom(s_time_t now, struct vcpu* v)
     /* Current domain is running in real time mode */
     ASSERT(__vcpu_on_queue(v));
 
+    /*******CBS Related tasks *********
+    * TODO UPDATE: This should not be needed here as it wll
+    * be handled in the desched_edf function.
+    *TODO: current_budget -= runinf->cputime (amount of time vcpu has run on the pcpu)*/
+    /* Decrement CBS budget based on time vCPU has run*/    
+    /**********************************/
     /* Update the vcpu's cputime */
     /* TODO: Update cbs_current_budget here instead */
     inf->cputime += now - inf->sched_start_abs;
-
+    inf->cbs_current_budget -= now - inf->sched_start_abs;
+    
     /* Scheduling decisions which don't remove the running domain from the runq */
     /* TODO: Update comparison to cbs_current_budget instead of slice */
+    if ( (inf->cbs_current_budget > MICROSECS(5)) && sedf_runnable(v))
+        return;
+    /* Original SEDF function */
     if ( (inf->cputime < inf->slice) && sedf_runnable(v) )
         return;
-
-    /* We have a blocked realtime task or its server budget has been consumed */
+       
+    /* We have a blocked vcpu or its server budget has been consumed */
     __del_from_queue(v);
 
     /*
@@ -339,14 +348,14 @@ static void desched_edf_dom(s_time_t now, struct vcpu* v)
         inf->deadl_abs += inf->period;
     }
 
+    /*TODO: Move cbs_update functionality to this function? */
+    cbs_update(inf, now);
+    
     /* Add a runnable domain to the waitqueue */
     if ( sedf_runnable(v) )
     {
         __add_to_waitqueue_sort(v);
     }
-
-    /*TODO: Move cbs_update functionality to this function? */
-    cbs_update(inf, now);
 
     ASSERT(EQ(sedf_runnable(v), __vcpu_on_queue(v)));
     ASSERT(sedf_runnable(v));
@@ -377,8 +386,9 @@ static void update_queues(
     {
         curinf = list_entry(cur,struct sedf_vcpu_info,list);
 
-        /* TODO: Update to CBS variables */
-        if ( unlikely(curinf->slice == 0) )
+        /* TODO: Update to just CBS variables */
+        if ( unlikely(curinf->slice == 0) || 
+             unlikely(curinf->cbs_max_budget == 0) )
         {
             /* TODO: update to "ignore vcpu's with empty max_budget */
             /* Ignore domains with empty slice */
@@ -395,9 +405,12 @@ static void update_queues(
                 curinf->deadl_abs +=
                     (DIV_UP(now - PERIOD_BEGIN(curinf),
                             curinf->period)) * curinf->period;
+                curinf->cbs_current_deadline +=
+                    (DIV_UP(now - PERIOD_BEGIN(curinf),
+                            curinf->cbs_period)) * curinf->cbs_period;
             }
 
-            /* Put them back into the queue */
+            /* Put vcpu back into the queue */
             __add_to_waitqueue_sort(curinf->vcpu);
         }
         /* TODO: This also should never happen with CBS working,
@@ -422,6 +435,7 @@ static void update_queues(
 
             /* Common case: we miss one period */
             curinf->deadl_abs += curinf->period;
+            curinf->cbs_current_deadline += curinf->cbs_period;
 
             /*
              * If we are still behind: modulo arithmetic, force deadline
@@ -435,6 +449,7 @@ static void update_queues(
 
             /* Give a fresh slice */
             curinf->cputime = 0; //Same as: cbs_current_budget = cbs_max_budget
+            curinf->cbs_current_budget = curinf->cbs_max_budget;
             if ( PERIOD_BEGIN(curinf) > now )
                 __add_to_waitqueue_sort(curinf->vcpu);
             else
@@ -481,22 +496,14 @@ static struct task_slice sedf_do_schedule(
     struct list_head     *runq     = RUNQ(cpu);
     struct list_head     *waitq    = WAITQ(cpu);
     struct sedf_vcpu_info *inf     = VCPU_INFO(current); /* TODO: find the origin of current */
-    struct sedf_vcpu_info *runinf, *waitinf, *budgetinf;
+    struct sedf_vcpu_info *runinf, *waitinf;
     struct task_slice      ret;
 
     SCHED_STAT_CRANK(schedule);
 
-    /*******CBS Related tasks *********
-    * TODO UPDATE: This should not be needed here as it wll
-    * be handled in the desched_edf function.
-    *TODO: current_budget -= runinf->cputime (amount of time vcpu has run on the pcpu)*/
-    /* Decrement CBS budget based on time vCPU has run*/
-    budgetinf  = list_entry(runq->next,struct sedf_vcpu_info,list);
-    budgetinf->cbs_current_budget -= (now - budgetinf->sched_start_abs);
-
     /* Idle tasks don't need any of the following stuff */
     if ( is_idle_vcpu(current) )
-        goto check_waitq;
+        goto do_updateq;
 
     /*
      * Create local state of the status of the domain, in order to avoid
@@ -513,7 +520,7 @@ static struct task_slice sedf_do_schedule(
      * or have consumed their server budget for this period */
     desched_edf_dom(now, current);
 
- check_waitq:
+ do_updateq:
     update_queues(now, runq, waitq);
 
     /*
@@ -582,7 +589,7 @@ static struct task_slice sedf_do_schedule(
      */
     if ( ret.time < 0)
     {
-        BUG_ON(1);
+        //BUG_ON(1);
         printk("Ouch! We are seriously BEHIND schedule! %"PRIi64"\n",
                ret.time);
         ret.time = MICROSECS(500);
@@ -612,16 +619,6 @@ static void sedf_sleep(const struct scheduler *ops, struct vcpu *v)
             __del_from_queue(v);
 }
 
-#define DOMAIN_EDF   1
-#define DOMAIN_IDLE   4
-static inline int get_run_type(struct vcpu *v)
-{ 
-    if (is_idle_vcpu(v))
-        return DOMAIN_IDLE;
-
-    return DOMAIN_EDF;
-}
-
 /* Print a lot of useful information about a domains in the system */
 static void sedf_dump_domain(struct vcpu *v)
 {
@@ -639,11 +636,10 @@ static void sedf_dump_domain(struct vcpu *v)
 }
 
 /*
- * Compares two domains in the relation of whether the one is allowed to
+ * Compares two vcpu's in the relation of whether the one is allowed to
  * interrupt the others execution.
- * It returns true (!=0) if a switch to the other domain is good.
- * Current Priority scheme is as follows:
- *  EDF > idle-domain
+ * It returns true (!=0) if a switch to the other vcpu is good,
+ * i.e. current vcpu is idle
  */
 static inline int should_switch(struct vcpu *cur,
                                 struct vcpu *other,
@@ -654,21 +650,20 @@ static inline int should_switch(struct vcpu *cur,
     other_inf = VCPU_INFO(other);
 
     /* Check whether we need to make an earlier scheduling decision */
+    /* TODO: Decide if this decision is relevant in a CBS paradigm */
     if ( PERIOD_BEGIN(other_inf) <
          CPU_INFO(other->processor)->current_slice_expires )
         return 1;
 
     /* No timing-based switches need to be taken into account here */
-    switch ( get_run_type(cur) )
-    {
-    case DOMAIN_EDF:
-        /* Do not interrupt a running EDF domain */
-        return 0;
-    case DOMAIN_IDLE:
+    if (is_idle_vcpu(cur)) {
+        /* Vcpu is idle, ok to switch */
         return 1;
     }
-
-    return 1;
+    else {
+        /* vcpu is NOT idle, do not switch */
+        return 0;
+    }
 }
 
 /* This function wakes up a domain, i.e. moves them into the waitqueue
@@ -770,6 +765,7 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *v)
     else
         __add_to_runqueue_sort(v);
 
+/* TODO: These statistics are likely no longer relevant with a CBS */
 #ifdef SEDF_STATS
     /* Do some statistics here... */
     if ( inf->block_abs != 0 )
@@ -783,7 +779,7 @@ static void sedf_wake(const struct scheduler *ops, struct vcpu *v)
     /*
      * Check whether the awakened task needs to invoke the do_schedule
      * routine. Try to avoid unnecessary runs but:
-     * Save approximation: Always switch to scheduler!
+     * Safe approximation: Always switch to scheduler!
      */
     ASSERT(v->processor >= 0);
     ASSERT(v->processor < nr_cpu_ids);
