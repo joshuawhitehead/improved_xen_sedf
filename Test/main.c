@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <math.h>
+#include <unistd.h>
 
 
 /* Constant */
@@ -20,7 +21,7 @@ void workloadProgram2();
 void clearBuffer(void) {
     char inputBuffer[BUFFER_LENGTH];
     if (fgets(inputBuffer, BUFFER_LENGTH, stdin) == NULL) {
-        (void)printf("Unlösbares Eingabe-Problem");
+        (void)printf("Problem with input buffer.");
         (void)exit(-1);
     }
 }
@@ -29,11 +30,12 @@ void clearBuffer(void) {
 
 int main(int argc, const char * argv[])
 {
-    int userInput;
+    char userInput = '\0';
     while (1) {
         userInput = 0;
-        (void)printf("\nPlease select a program to run.\n'1'\t-\tDefault\n");
-        (void)scanf("%d", &userInput);
+        (void)printf("\nPlease select a program to run.\n'0'\t-\tDefault\n");
+        ans = getChar();
+        
         (void)clearBuffer();
         
         (void)sleep(1);
@@ -41,11 +43,11 @@ int main(int argc, const char * argv[])
         (void)printf("Input: %d\n", userInput);
         
         switch (userInput) {
-            case 1:
+            case '1':
                 (void)printf("Running program 1\n");
                 workloadProgram1();
                 break;
-            case 0:
+            case '0':
             default:
                 (void)printf("Invalid program\n");
                 workloadProgram2();
