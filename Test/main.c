@@ -33,7 +33,7 @@ int main(int argc, const char * argv[])
     char userInput = '\0';
     while (1) {
         (void)printf("\nPlease select a program to run.\n'0'\t-\tDefault\n");
-        userInput = getChar();
+        userInput = getchar();
         
         (void)clearBuffer();
         
