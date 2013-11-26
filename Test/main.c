@@ -14,8 +14,10 @@
 #define WORKLOAD_SIZE 10000000
 
 
-void workloadProgram1();
-void workloadProgram2();
+void workloadProgramSum();
+void workloadProgramNOP();
+void workloadProgramBlocking();
+void workloadProgramWhileTrue();
 
 
 void clearBuffer(void) {
@@ -42,14 +44,20 @@ int main(int argc, const char * argv[])
         (void)printf("Input: %d\n", userInput);
         
         switch (userInput) {
+            case '3':
+                (void)printf("Entering blocking state (waiting for user input).\n");
+                
+            case '2':
+                (void)printf("Entering while(1) loop.\n");
+                
             case '1':
                 (void)printf("Running program 1\n");
-                workloadProgram1();
+                workloadProgramSum();
                 break;
             case '0':
             default:
                 (void)printf("Invalid program\n");
-                workloadProgram2();
+                workloadProgramNOP();
                 break;
         }        
     }
@@ -61,7 +69,7 @@ int main(int argc, const char * argv[])
 
 
 /** test workload example **/
-void workloadProgram1() {
+void workloadProgramSum() {
     int i,j;
     int sum = 0;
     for (i = 0; i < WORKLOAD_SIZE; i++) {
@@ -76,8 +84,26 @@ void workloadProgram1() {
 }
 
 /** TODO: create a workload according to documentation **/
-void workloadProgram2() {
-    // TODO:
+void workloadProgramNOP() {
+    (void)printf("An empty function has been found...\n");
+    sleep(1);
+    (void)printf("Nothing happened...\n");
     return;
 }
 
+
+// blocking state
+// waiting for char
+void workloadProgramBlocking() {
+    (void)printf("Waiting for user input.\n");
+    (void)getchar();
+    return;
+}
+
+
+// while (1)
+void workloadProgramWhileTrue() {
+    while (1) {
+        workloadProgramSum();
+    }
+}
