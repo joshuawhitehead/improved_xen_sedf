@@ -13,7 +13,7 @@
 #define BUFFER_LENGTH 100
 #define WORKLOAD_SIZE 10000000
 
-
+/* function declaration */
 void workloadProgramSum();
 void workloadProgramNOP();
 void workloadProgramBlocking();
@@ -68,7 +68,7 @@ int main(int argc, const char * argv[])
 
 
 
-/** test workload example **/
+// test workload example
 void workloadProgramSum() {
     int i,j;
     int sum = 0;
@@ -83,7 +83,7 @@ void workloadProgramSum() {
     return;
 }
 
-/** TODO: create a workload according to documentation **/
+// no operation
 void workloadProgramNOP() {
     (void)printf("An empty function has been found...\n");
     sleep(1);
@@ -92,8 +92,7 @@ void workloadProgramNOP() {
 }
 
 
-// blocking state
-// waiting for char
+// blocking state - waiting for char
 void workloadProgramBlocking() {
     (void)printf("Waiting for user input.\n");
     (void)getchar();
