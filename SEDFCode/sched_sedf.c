@@ -425,8 +425,11 @@ static void update_queues(
     list_for_each_safe ( cur, tmp, waitq )
     {
         curinf = list_entry(cur, struct sedf_vcpu_info, list);
-        if ( PERIOD_BEGIN(curinf) > now )
-            break;
+        //TODO: This was changed
+        //if ( PERIOD_BEGIN(curinf) > now )
+        //      break;
+        if(!(curinf->status & SEDF_ASLEEP))
+            continue;
         __del_from_queue(curinf->vcpu);
         __add_to_runqueue_sort(curinf->vcpu);
     }
@@ -575,7 +578,7 @@ static struct task_slice sedf_do_schedule(
      * vcpu_runnable is not protected by the scheduling lock!
      */
     if ( !vcpu_runnable(current) )
-        inf->status |= SEDF_ASLEEP;
+        inf->status |= SEDF_ASLEEP; //Set status as "Asleep"
 
     if ( inf->status & SEDF_ASLEEP )
         inf->block_abs = now;
@@ -636,12 +639,15 @@ static struct task_slice sedf_do_schedule(
     {
         /*TODO: Use BUG_ON or trace to see if do_extra_schedule happens when CBS is implemented,
          *      we think that it will not be used */
+        printk("CBS: Run queue was empty!")
         //BUG_ON(1);
         waitinf  = list_entry(waitq->next,struct sedf_vcpu_info, list);
         /*
          * We could not find any suitable domain
          * => all domains must be idle or blocked
          */
+        ret.task = waitinf->vcpu; 
+        ret.time = waitinf->cbs_current_budget;
     }
 
     /*
