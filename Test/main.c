@@ -34,7 +34,8 @@ int main(int argc, const char * argv[])
 {
     char userInput = '\0';
     while (1) {
-        (void)printf("\nPlease select a program to run.\n'0'\t-\tDefault\n");
+        (void)printf("\nPlease select a program to run.\n");
+        (void)printf("'0'\t-\tDefault\n'1'\t-\tSum-program\n'2'\t-\While-true-program\n'3'\t-\Blocking-program");
         userInput = getchar();
         
         (void)clearBuffer();
@@ -46,10 +47,12 @@ int main(int argc, const char * argv[])
         switch (userInput) {
             case '3':
                 (void)printf("Entering blocking state (waiting for user input).\n");
-                
+                workloadProgramBlocking();
+                break;
             case '2':
                 (void)printf("Entering while(1) loop.\n");
-                
+                workloadProgramWhileTrue();
+                break;
             case '1':
                 (void)printf("Running program 1\n");
                 workloadProgramSum();
