@@ -394,8 +394,12 @@ static void update_queues(
         //TODO: This was changed
         //if ( PERIOD_BEGIN(curinf) > now )
         //      break;
-        if(!(curinf->status & SEDF_ASLEEP))
+        /* If vcpu is asleep, keep on wait queue */
+        if(curinf->status & SEDF_ASLEEP)
+        {
             continue;
+        }
+        /* Else, vcpu is awake, move to run queue */
         __del_from_queue(curinf->vcpu);
         __add_to_runqueue_sort(curinf->vcpu);
     }
@@ -605,7 +609,7 @@ static struct task_slice sedf_do_schedule(
 
     VCPU_INFO(ret.task)->sched_start_abs = now;
     CHECK(ret.time > 0);
-    ASSERT(sedf_runnable(ret.task));
+    ASSERT(sedf_runnable(ret.task)); //***** DIES HERE
     CPU_INFO(cpu)->current_slice_expires = now + ret.time;
     return ret;
 }
