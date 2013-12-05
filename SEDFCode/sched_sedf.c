@@ -200,7 +200,7 @@ static void *sedf_alloc_vdata(const struct scheduler *ops, struct vcpu *v, void 
     /* Default CBS Parameters */
     inf->cbs_period     = MILLISECS(10);
     inf->cbs_max_budget = MILLISECS(10);
-    inf->cputime       = 0;
+    inf->cputime        = 0;
     inf->cbs_deadline   = 0;
     inf->cbs_budget     = inf->cbs_max_budget - inf->cputime;
 
@@ -275,7 +275,7 @@ static void sedf_destroy_domain(const struct scheduler *ops, struct domain *d)
 
 
 /*
-** CBS TODO: Might need to use this for multiprocessor support
+** CBS TODO: Will likely need to use this for multiprocessor support
 */
 static int sedf_pick_cpu(const struct scheduler *ops, struct vcpu *v)
 {
@@ -326,8 +326,7 @@ static void desched_edf_dom(s_time_t now, struct vcpu* v)
     /* Ensures that at least 5us are available in budget before using it,
      * this should avoid overruns due to latency */
     if ((inf->cbs_budget > MICROSECS(5)) && sedf_runnable(v)){
-        printk("CBS: desched_edf_dom-internal: %"PRIu64"ns \
-                still remain in budget, returning... \n", inf->cbs_budget); 
+        printk("CBS: desched_edf_dom-internal: %"PRIu64"ns still remain in budget, returning... \n", inf->cbs_budget); 
         return;
     }
        
@@ -343,7 +342,7 @@ static void desched_edf_dom(s_time_t now, struct vcpu* v)
     /* TODO: Move cbs_update functionality to this function? */ // Yes
     /* Update server parameters as appropriate */    
 
-    /* Replensish budget */
+    /* Replensish budget */ 
     inf->cputime = 0;
     inf->cbs_budget = inf->cbs_max_budget;
     /* Update server deadline */
@@ -383,20 +382,26 @@ static void update_queues(
 
     printk("CBS: update_queues, now=%"PRIu64"\n", now);
 
-    /* TODO: With CBS, I don't think we care about this: */
-    /*
-     * Check for the first elements of the waitqueue, whether their
-     * next period has already started.
-     */
+    /* TODO: Verify waitq is processed with proper logic for CBS */
     list_for_each_safe ( cur, tmp, waitq )
     {
         curinf = list_entry(cur, struct sedf_vcpu_info, list);
-        //TODO: This was changed
-        //if ( PERIOD_BEGIN(curinf) > now )
-        //      break;
+        /* Check if vcpu is runnable, if it is, set as awake */
+        if (vcpu_runnable(curinf->vcpu)){
+            printk("CBS: update_queues-internal, vcpu IS runnable, set as awake\n");
+            curinf->status &= ~SEDF_ASLEEP; //Set status as "awake"
+            if(curinf->cbs_budget >= (curinf->cbs_deadline - now) *
+                                      (curinf->cbs_max_budget / curinf->cbs_period)) {
+		        curinf->cbs_deadline = now + curinf->cbs_period;
+            }
+        }
+        else
+            printk("CBS: update_queues-internal, vcpu NOT runnable, leave as asleep\n");
+            
         /* If vcpu is asleep, keep on wait queue */
         if(curinf->status & SEDF_ASLEEP)
         {
+            printk("CBS: update_queues-internal, vcpu was asleep\n");
             continue;
         }
         /* Else, vcpu is awake, move to run queue */
@@ -544,8 +549,10 @@ static struct task_slice sedf_do_schedule(
      * inconsistent state during scheduling decisions, because data for
      * vcpu_runnable is not protected by the scheduling lock!
      */
-    if ( !vcpu_runnable(current) )
+    if ( !vcpu_runnable(current) ){
+        printk("CBS: sedf_do_schedule-internal, vcpu was NOT runnable, set as asleep\n");
         inf->status |= SEDF_ASLEEP; //Set status as "Asleep"
+    }
 
     if ( inf->status & SEDF_ASLEEP )
         inf->block_abs = now;
@@ -577,7 +584,7 @@ static struct task_slice sedf_do_schedule(
     {
         printk("CBS: Tasklet work was scheduled!\n");
         ret.task = IDLETASK(cpu);
-        ret.time = SECONDS(1);
+        ret.time = MILLISECS(1);
     }
     /* RunQ is not empty and tasklet work was no needed */
     else
